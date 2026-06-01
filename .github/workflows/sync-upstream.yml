@@ -1,0 +1,67 @@
+name: Sync upstream
+
+# Skontroluje originál (mksglu/context-mode) raz týždenne.
+# Ak je tam novinka, otvorí PR do main. NIKDY nemerguje automaticky —
+# zmenu vždy schvaľuje človek po kontrole diffu (bezpečnostný audit).
+
+on:
+  schedule:
+    - cron: "0 6 * * 1" # každý pondelok o 06:00 UTC
+  workflow_dispatch: {} # umožní spustiť aj ručne tlačidlom "Run workflow"
+
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  UPSTREAM: https://github.com/mksglu/context-mode.git
+  SYNC_BRANCH: upstream-sync
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (full history)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch upstream
+        run: |
+          git remote add upstream "$UPSTREAM"
+          git fetch upstream main --tags
+
+      - name: Check for new commits
+        id: check
+        run: |
+          NEW=$(git rev-list --count origin/main..upstream/main)
+          echo "new_commits=$NEW" >> "$GITHUB_OUTPUT"
+          echo "Nových commitov v origináli: $NEW"
+
+      - name: Push sync branch
+        if: steps.check.outputs.new_commits != '0'
+        run: |
+          # Pretlačí stav originálu do vetvy upstream-sync (PR sa tým auto-aktualizuje)
+          git push origin upstream/main:refs/heads/${SYNC_BRANCH} --force
+
+      - name: Open PR if none exists
+        if: steps.check.outputs.new_commits != '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh pr list --head "$SYNC_BRANCH" --state open --json number --jq '.[0].number' | grep -q '[0-9]'; then
+            echo "PR už existuje — vetva sa aktualizovala, netreba otvárať nový."
+          else
+            gh pr create \
+              --base main \
+              --head "$SYNC_BRANCH" \
+              --title "Sync upstream: ${{ steps.check.outputs.new_commits }} nových commitov" \
+              --body "Automaticky vytvorené. V origináli \`mksglu/context-mode\` pribudli zmeny.
+
+          **Pred mergom skontroluj diff** (bezpečnostný audit — tento tool spúšťa kód a hooky):
+          - pozri zmeny v \`package.json\` (scripts), hookoch a v tom, čo sťahuje,
+          - ak je všetko OK → merguj cez merge commit (zachová naše súbory ako tento workflow),
+          - ak niečo nesedí → zavri PR.
+
+          Nikdy nemerguj naslepo."
+          fi
